@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "crypto/common.h"
 
 template <unsigned int BITS>
 base_uint<BITS>::base_uint(const std::string& str)
@@ -246,14 +247,22 @@ uint32_t arith_uint256::GetCompact(bool fNegative) const
 uint256 ArithToUint256(const arith_uint256 &a)
 {
     uint256 b;
-    // TODO: needs bswap32 on big-endian
+#if defined(WORDS_BIGENDIAN)
+    for(int x=0; x<a.WIDTH; ++x)
+        WriteLE32(b.begin() + x*4, a.pn[x]);
+#else // Little endian can use simple memcpy
     memcpy(b.begin(), a.pn, a.size());
+#endif
     return b;
 }
 arith_uint256 UintToArith256(const uint256 &a)
 {
     arith_uint256 b;
-    // TODO: needs bswap32 on big-endian
+#if defined(WORDS_BIGENDIAN)
+    for(int x=0; x<b.WIDTH; ++x)
+        b.pn[x] = ReadLE32(a.begin() + x*4);
+#else // Little endian can use simple memcpy
     memcpy(b.pn, a.begin(), a.size());
+#endif
     return b;
 }

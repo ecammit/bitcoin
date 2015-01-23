@@ -35,22 +35,14 @@ static const struct {
       {RF_JSON, "json"},
 };
 
-class RestErr
-{
-public:
-    enum HTTPStatusCode status;
-    string message;
-};
-
 extern void TxToJSON(const CTransaction& tx, const uint256 hashBlock, Object& entry);
 extern Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool txDetails = false);
 
-static RestErr RESTERR(enum HTTPStatusCode status, string message)
+static bool RESTERR(HTTPRequest* req, enum HTTPStatusCode status, string message)
 {
-    RestErr re;
-    re.status = status;
-    re.message = message;
-    return re;
+    req->WriteHeader("Content-Type", "text/plain");
+    req->WriteReply(status, message + "\r\n");
+    return false;
 }
 
 static enum RetFormat ParseDataFormat(vector<string>& params, const string& strReq)
@@ -90,25 +82,35 @@ static bool ParseHashStr(const string& strReq, uint256& v)
     return true;
 }
 
+static bool CheckWarmup(HTTPRequest* req)
+{
+    std::string statusmessage;
+    if (RPCIsInWarmup(&statusmessage))
+         return RESTERR(req, HTTP_SERVICE_UNAVAILABLE, "Service temporarily unavailable: " + statusmessage);
+    return true;
+}
+
 static bool rest_headers(HTTPRequest* req,
                          const std::string& strReq)
 {
+    if (!CheckWarmup(req))
+        return false;
     vector<string> params;
     enum RetFormat rf = ParseDataFormat(params, strReq);
     vector<string> path;
     boost::split(path, params[0], boost::is_any_of("/"));
 
     if (path.size() != 2)
-        throw RESTERR(HTTP_BAD_REQUEST, "No header count specified. Use /rest/headers/<count>/<hash>.<ext>.");
+        return RESTERR(req, HTTP_BAD_REQUEST, "No header count specified. Use /rest/headers/<count>/<hash>.<ext>.");
 
     long count = strtol(path[0].c_str(), NULL, 10);
     if (count < 1 || count > 2000)
-        throw RESTERR(HTTP_BAD_REQUEST, "Header count out of range: " + path[0]);
+        return RESTERR(req, HTTP_BAD_REQUEST, "Header count out of range: " + path[0]);
 
     string hashStr = path[1];
     uint256 hash;
     if (!ParseHashStr(hashStr, hash))
-        throw RESTERR(HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
+        return RESTERR(req, HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
 
     std::vector<CBlockHeader> headers;
     headers.reserve(count);
@@ -145,7 +147,7 @@ static bool rest_headers(HTTPRequest* req,
     }
 
     default: {
-        throw RESTERR(HTTP_NOT_FOUND, "output format not found (available: .bin, .hex)");
+        return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: .bin, .hex)");
     }
     }
 
@@ -157,24 +159,26 @@ static bool rest_block(HTTPRequest* req,
                        const std::string& strReq,
                        bool showTxDetails)
 {
+    if (!CheckWarmup(req))
+        return false;
     vector<string> params;
     enum RetFormat rf = ParseDataFormat(params, strReq);
 
     string hashStr = params[0];
     uint256 hash;
     if (!ParseHashStr(hashStr, hash))
-        throw RESTERR(HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
+        return RESTERR(req, HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
 
     CBlock block;
     CBlockIndex* pblockindex = NULL;
     {
         LOCK(cs_main);
         if (mapBlockIndex.count(hash) == 0)
-            throw RESTERR(HTTP_NOT_FOUND, hashStr + " not found");
+            return RESTERR(req, HTTP_NOT_FOUND, hashStr + " not found");
 
         pblockindex = mapBlockIndex[hash];
         if (!ReadBlockFromDisk(block, pblockindex))
-            throw RESTERR(HTTP_NOT_FOUND, hashStr + " not found");
+            return RESTERR(req, HTTP_NOT_FOUND, hashStr + " not found");
     }
 
     CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
@@ -204,7 +208,7 @@ static bool rest_block(HTTPRequest* req,
     }
 
     default: {
-        throw RESTERR(HTTP_NOT_FOUND, "output format not found (available: " + AvailableDataFormatsString() + ")");
+        return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: " + AvailableDataFormatsString() + ")");
     }
     }
 
@@ -224,18 +228,20 @@ static bool rest_block_notxdetails(HTTPRequest* req, const std::string& strReq)
 
 static bool rest_tx(HTTPRequest* req, const std::string& strReq)
 {
+    if (!CheckWarmup(req))
+        return false;
     vector<string> params;
     enum RetFormat rf = ParseDataFormat(params, strReq);
 
     string hashStr = params[0];
     uint256 hash;
     if (!ParseHashStr(hashStr, hash))
-        throw RESTERR(HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
+        return RESTERR(req, HTTP_BAD_REQUEST, "Invalid hash: " + hashStr);
 
     CTransaction tx;
     uint256 hashBlock = uint256();
     if (!GetTransaction(hash, tx, hashBlock, true))
-        throw RESTERR(HTTP_NOT_FOUND, hashStr + " not found");
+        return RESTERR(req, HTTP_NOT_FOUND, hashStr + " not found");
 
     CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
     ssTx << tx;
@@ -265,7 +271,7 @@ static bool rest_tx(HTTPRequest* req, const std::string& strReq)
     }
 
     default: {
-        throw RESTERR(HTTP_NOT_FOUND, "output format not found (available: " + AvailableDataFormatsString() + ")");
+        return RESTERR(req, HTTP_NOT_FOUND, "output format not found (available: " + AvailableDataFormatsString() + ")");
     }
     }
 
@@ -283,26 +289,19 @@ static const struct {
       {"/rest/headers/", rest_headers},
 };
 
-bool HTTPReq_REST(HTTPRequest* req)
+bool StartREST()
 {
-    try {
-        std::string statusmessage;
-        if (RPCIsInWarmup(&statusmessage))
-            throw RESTERR(HTTP_SERVICE_UNAVAILABLE, "Service temporarily unavailable: " + statusmessage);
+    for (unsigned int i = 0; i < ARRAYLEN(uri_prefixes); i++)
+        RegisterHTTPHandler(uri_prefixes[i].prefix, false, uri_prefixes[i].handler);
+    return true;
+}
 
-        std::string strURI = req->GetURI();
-        for (unsigned int i = 0; i < ARRAYLEN(uri_prefixes); i++) {
-            unsigned int plen = strlen(uri_prefixes[i].prefix);
-            if (strURI.substr(0, plen) == uri_prefixes[i].prefix) {
-                string strReq = strURI.substr(plen);
-                return uri_prefixes[i].handler(req, strReq);
-            }
-        }
-    } catch (const RestErr& re) {
-        req->WriteHeader("Content-Type", "text/plain");
-        req->WriteReply(re.status, re.message + "\r\n");
-        return false;
-    }
-    req->WriteReply(HTTP_NOT_FOUND);
-    return false;
+void InterruptREST()
+{
+}
+
+void StopREST()
+{
+    for (unsigned int i = 0; i < ARRAYLEN(uri_prefixes); i++)
+        UnregisterHTTPHandler(uri_prefixes[i].prefix, false);
 }

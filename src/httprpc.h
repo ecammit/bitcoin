@@ -22,8 +22,16 @@ void InterruptHTTPRPC(); /// XXX replace by signal
  */
 void StopHTTPRPC();
 
-bool HTTPReq_JSONRPC(HTTPRequest* req);
-//! Defined in rest.cpp
-bool HTTPReq_REST(HTTPRequest* req);
+/** Start HTTP REST subsystem.
+ * Precondition; HTTP and RPC has been started.
+ */
+bool StartREST();
+/** Interrupt RPC REST subsystem.
+ */
+void InterruptREST();
+/** Stop HTTP REST subsystem.
+ * Precondition; HTTP and RPC has been stopped.
+ */
+void StopREST();
 
 #endif

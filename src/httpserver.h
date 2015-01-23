@@ -9,10 +9,12 @@
 #include <stdint.h>
 #include <boost/thread.hpp>
 #include <boost/scoped_ptr.hpp>
+#include <boost/function.hpp>
 
 struct evhttp_request;
 struct event_base;
 class CService;
+class HTTPRequest;
 
 /** Start HTTP server */
 bool StartHTTPServer(boost::thread_group& threadGroup);
@@ -20,6 +22,16 @@ bool StartHTTPServer(boost::thread_group& threadGroup);
 void InterruptHTTPServer(); /// XXX replace by signal
 /** Stop HTTP server */
 void StopHTTPServer();
+
+/** Handler for requests to a certain HTTP path */
+typedef boost::function<void(HTTPRequest* req, const std::string &)> HTTPRequestHandler;
+/** Register handler for prefix.
+ * If multiple handlers match a prefix, the first-registered one will
+ * be invoked.
+ */
+void RegisterHTTPHandler(const std::string &prefix, bool exactMatch, const HTTPRequestHandler &handler);
+/** Unregister handler for prefix */
+void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch);
 
 /** Return evhttp event base. This can be used by submodules to
  * queue timers or custom events.

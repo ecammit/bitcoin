@@ -6,7 +6,6 @@
 
 #include "chainparamsbase.h"
 #include "compat.h"
-#include "httprpc.h"
 #include "util.h"
 #include "netbase.h"
 #include "rpcprotocol.h" // For HTTP status codes
@@ -44,21 +43,20 @@
 class HTTPWorkItem : public HTTPClosure
 {
 public:
-    HTTPWorkItem()
-    {
-    }
-    HTTPWorkItem(HTTPRequest* req, const boost::function<void(HTTPRequest*)>& func) : req(req), func(func)
+    HTTPWorkItem(HTTPRequest* req, const std::string &path, const HTTPRequestHandler& func):
+        req(req), path(path), func(func)
     {
     }
     void operator()()
     {
-        func(req.get());
+        func(req.get(), path);
     }
 
     boost::scoped_ptr<HTTPRequest> req;
 
 private:
-    boost::function<void(HTTPRequest*)> func;
+    std::string path;
+    HTTPRequestHandler func;
 };
 
 /** Simple work queue for distributing work over multiple threads.
@@ -134,6 +132,18 @@ public:
     }
 };
 
+struct HTTPPathHandler
+{
+    HTTPPathHandler() {}
+    HTTPPathHandler(std::string prefix, bool exactMatch, HTTPRequestHandler handler):
+        prefix(prefix), exactMatch(exactMatch), handler(handler)
+    {
+    }
+    std::string prefix;
+    bool exactMatch;
+    HTTPRequestHandler handler;
+};
+
 /** HTTP module state */
 
 //! libevent event loop
@@ -144,6 +154,8 @@ struct evhttp* eventHTTP = 0;
 static std::vector<CSubNet> rpc_allow_subnets;
 //! Work queue for handling longer requests off the event loop thread
 static WorkQueue<HTTPClosure>* workQueue = 0;
+//! Handlers for (sub)paths
+std::vector<HTTPPathHandler> pathHandlers;
 
 /** Check if a network address is allowed to access the HTTP server */
 static bool ClientAllowed(const CNetAddr& netaddr)
@@ -223,20 +235,27 @@ static void http_request_cb(struct evhttp_request* req, void* arg)
         return;
     }
 
-    assert(workQueue);
-
-    // XXX replace with registration function instead of direct dependency
+    // Find registered handler for prefix
     std::string strURI = hreq->GetURI();
-    boost::function<void(HTTPRequest*)> func;
-    if (strURI == "/") {
-        func = HTTPReq_JSONRPC;
-    } else if (strURI.substr(0, 5) == "/rest") {
-        func = HTTPReq_REST;
+    std::string path;
+    std::vector<HTTPPathHandler>::const_iterator i = pathHandlers.begin();
+    std::vector<HTTPPathHandler>::const_iterator iend = pathHandlers.end();
+    for (; i != iend; ++i) {
+        bool match = false;
+        if (i->exactMatch)
+            match = (strURI == i->prefix);
+        else
+            match = (strURI.substr(0, i->prefix.size()) == i->prefix);
+        if (match) {
+            path = strURI.substr(i->prefix.size());
+            break;
+        }
     }
 
     // Dispatch to worker thread
-    if (func) {
-        std::auto_ptr<HTTPWorkItem> item(new HTTPWorkItem(hreq.release(), func));
+    if (i != iend) {
+        std::auto_ptr<HTTPWorkItem> item(new HTTPWorkItem(hreq.release(), path, i->handler));
+        assert(workQueue);
         if (workQueue->Enqueue(item.get()))
             item.release(); /* if true, queue took ownership */
         else
@@ -545,3 +564,24 @@ HTTPRequest::RequestMethod HTTPRequest::GetRequestMethod()
         break;
     }
 }
+
+void RegisterHTTPHandler(const std::string &prefix, bool exactMatch, const HTTPRequestHandler &handler)
+{
+    LogPrint("http", "Registering HTTP handler for %s (exactmath %d)\n", prefix, exactMatch);
+    pathHandlers.push_back(HTTPPathHandler(prefix, exactMatch, handler));
+}
+
+void UnregisterHTTPHandler(const std::string &prefix, bool exactMatch)
+{
+    std::vector<HTTPPathHandler>::iterator i = pathHandlers.begin();
+    std::vector<HTTPPathHandler>::iterator iend = pathHandlers.end();
+    for (; i != iend; ++i)
+        if (i->prefix == prefix && i->exactMatch == exactMatch)
+            break;
+    if (i != iend)
+    {
+        LogPrint("http", "Unregistering HTTP handler for %s (exactmath %d)\n", prefix, exactMatch);
+        pathHandlers.erase(i);
+    }
+}
+

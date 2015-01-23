@@ -92,7 +92,7 @@ static bool RPCAuthorized(const std::string& strAuth)
     return TimingResistantEqual(strUserPass, strRPCUserColonPass);
 }
 
-bool HTTPReq_JSONRPC(HTTPRequest* req)
+static bool HTTPReq_JSONRPC(HTTPRequest* req, const std::string &)
 {
     // JSONRPC handles only POST
     if (req->GetRequestMethod() != HTTPRequest::POST) {
@@ -193,6 +193,8 @@ bool StartHTTPRPC()
     if (!InitRPCAuthentication())
         return false;
 
+    RegisterHTTPHandler("/", true, HTTPReq_JSONRPC);
+
     assert(EventBase());
     httpRPCTimerInterface = new HTTPRPCTimerInterface(EventBase());
     RPCRegisterTimerInterface(httpRPCTimerInterface);
@@ -207,6 +209,7 @@ void InterruptHTTPRPC()
 void StopHTTPRPC()
 {
     LogPrint("rpc", "Stopping HTTP RPC server\n");
+    UnregisterHTTPHandler("/", true);
     if (httpRPCTimerInterface) {
         RPCUnregisterTimerInterface(httpRPCTimerInterface);
         delete httpRPCTimerInterface;

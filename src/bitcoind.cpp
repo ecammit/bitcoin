@@ -48,6 +48,7 @@ void DetectShutdownThread(boost::thread_group* threadGroup)
     InterruptHTTPServer();
     InterruptHTTPRPC();
     InterruptRPC();
+    InterruptREST();
     if (threadGroup)
     {
         threadGroup->interrupt_all();
